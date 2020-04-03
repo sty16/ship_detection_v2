@@ -3,11 +3,8 @@
 #include<iostream>
 #include<cuda_runtime.h>
 #include<cuComplex.h>
+#include"cuMacro.h"
 using namespace std;
-#define INDEX(ROW, COL, INNER) ((ROW) * (INNER) + (COL))
-#define BDIMX 32
-#define BDIMY BDIMX
-
 
 class cuHostMat
 {

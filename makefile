@@ -1,5 +1,5 @@
 target = test
-objs =  demo.o  cuHostMat.o
+objs =  demo.o  matRead.o cuHostMat.o cuDevMat.o
 CC = g++
 NVCC = nvcc
 CPPFLAGS = -I. -I/usr/local/include/opencv4/opencv -I/usr/local/include/opencv4 \
@@ -17,7 +17,7 @@ LDFLAGS = -L/usr/lib/x86_64-linux-gnu/  -L/usr/local/lib \
 
 
 $(target):$(objs)
-	nvcc -arch=sm_50 -dlink  cuHostMat.o demo.o -o demo_link.o
+	nvcc -arch=sm_50 -dlink  cuHostMat.o cuDevMat.o demo.o -o demo_link.o
 	$(CC) demo_link.o  $(objs) $(LDFLAGS) -o $(target) 
 	rm -f $(objs) demo_link.o
 
