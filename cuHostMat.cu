@@ -79,6 +79,13 @@ __global__ void transposeSmem(cuHostMat a, cuHostMat res)
     }
 }
 
+__host__ cuHostMat::cuHostMat()
+{
+    height = width = 0;
+    pitch = 0;
+    data = NULL;
+}
+
 __host__ cuHostMat::cuHostMat(int h, int w)
 {
     if(h <= 0 || w <= 0)
@@ -110,6 +117,26 @@ __host__ cuHostMat::cuHostMat(const cuHostMat &mat)
 __host__ cuHostMat::~cuHostMat()
 {
     // cudaFree(data);                                           // 避免局部变量的析构释放显存空间，注意拷贝构造函数采用的浅复制
+}
+
+__host__ void cuHostMat::init(int h, int w)
+{
+    if(h <= 0 || w <= 0)
+    {
+        fprintf(stderr, "The input size is invalid\n");
+        exit(EXIT_FAILURE);
+    }else{
+        cudaError_t error_t = cudaMallocPitch((void**)&data, &pitch, sizeof(cuComplex)*w, h); 
+        if(error_t != cudaSuccess)
+        {
+            height = width = 0;
+            fprintf(stderr, "%s.\n", cudaGetErrorString(error_t));
+            exit(EXIT_FAILURE);
+        }else{
+            height = h;
+            width = w;
+        }
+    }
 }
 
 __host__ __device__ int cuHostMat::get_h() const

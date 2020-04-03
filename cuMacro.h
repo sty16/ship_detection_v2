@@ -4,4 +4,6 @@
 #define BDIMX 32
 #define BDIMY BDIMX
 #define THREADSPACE 32768                                // 32KB each thread hava global memory as stack
+#define NGPUS 2
+typedef unsigned char uint8;
 #endif

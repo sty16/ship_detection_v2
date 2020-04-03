@@ -14,9 +14,11 @@ class cuHostMat
         size_t pitch;                                                   // align to speed up memory access see cudaMallocPitch
         cuComplex *data;
     public:
+    __host__ cuHostMat();
     __host__ cuHostMat(int h, int w);
     __host__ cuHostMat(const cuHostMat &mat);
     __host__ ~cuHostMat();
+    __host__ void init(int h, int w);
     __host__ void release();                                             // explicit call to free GPU memory space
     __host__ __device__ int get_h() const;
     __host__ __device__ int get_w() const;
