@@ -3,10 +3,11 @@
 #include"matRead.h"
 #include<opencv2/opencv.hpp>
 #include<stdio.h>
+#include<sys/time.h>
 using namespace cv;
 
 __device__ __managed__ cuHostMat *imgPad[NGPUS];          //device variable managed variable,to which Host is accessible
-__device__ __managed__ cuHostMat *img;             // the matrix of the origin image
+__device__ __managed__ cuHostMat *img[NGPUS];             // the matrix of the origin image
 __device__ __managed__ char *MemPool[NGPUS];            // the global memory that thread have  内存池
 __device__ __managed__ uint8 *resImg[NGPUS];             // the  result of the pwf image
 
@@ -31,7 +32,14 @@ inline void enableP2P(int ngpus)
     }
 }
 
-__device__ void copyToClutter(cuComplex *clutter_data, int height, int width, int row, int col, int pad_row, int pad_col)
+double cpuSecond()
+{
+    struct timeval tp;
+    gettimeofday(&tp, NULL);
+    return ((double)tp.tv_sec + (double)tp.tv_usec*1e-6);
+}
+
+__device__ void copyToClutter(cuComplex *clutter_data, int height, int width, int row, int col, int pad_row, int pad_col, int device)
 {
     // pad_row = 7 pad_col = 7
     for(int k=0;k<height;k++)
@@ -45,7 +53,7 @@ __device__ void copyToClutter(cuComplex *clutter_data, int height, int width, in
                 {
                     continue;
                 }
-                clutter_data[INDEX(k, temp, width)] = imgPad[k].at(row+i, col+j);
+                clutter_data[INDEX(k, temp, width)] = imgPad[device][k].at(row+i, col+j);
             }
         }
     }
@@ -78,15 +86,15 @@ __global__ void f_PWF(int device, int height, int width, int pad_row, int pad_co
     pointer[t_col] = 0;
     if(t_row < height && t_col < width)
     {
-        char *ThreadMemPool = (char *)MemPool + (size_t)INDEX(c_row, t_col, width)*THREADSPACE;   // 找到线程自己的全局内存池位置
+        char *ThreadMemPool = (char *)MemPool[device] + (size_t)INDEX(c_row, t_col, width)*THREADSPACE;   // 找到线程自己的全局内存池位置
         cuDevMat clutter(3, N, ThreadMemPool, &pointer[t_col]);
-        copyToClutter(clutter.get_data(), 3, N, t_row, t_col, pad_row, pad_col);
+        copyToClutter(clutter.get_data(), 3, N, t_row, t_col, pad_row, pad_col, device);
         cuComplex alpha = make_cuComplex(1.0/N, 0);
         cuDevMat sigma_c = clutter.her(alpha);
         cuDevMat sigma_inv = sigma_c.inv();
         for(int i=0;i < 3;i++)
         {
-            data[i] =  img[i].at(t_row, t_col);                    // 注意mallocpitch要行对其访问
+            data[i] =  img[device][i].at(t_row, t_col);                    // 注意mallocpitch要行对其访问
         }
         for(int i=0;i<3;i++)
         {
@@ -102,7 +110,7 @@ __global__ void f_PWF(int device, int height, int width, int pad_row, int pad_co
             result = cuCaddf(result, cuCmulf(cuConjf(data[i]), temp[i]));
         }
         res = cuCabsf(result);
-        resImg[INDEX(t_row, t_col, width)] = res>T?255:0;
+        resImg[device][INDEX(t_row, t_col, width)] = res>T?255:0;
     }
 }
 
@@ -123,7 +131,7 @@ int main(){
     img_mat[0] = matToArray(matfile_HH, param_HH);
     img_mat[1] = matToArray(matfile_HV, param_HV);
     img_mat[2] = matToArray(matfile_VV, param_VV);
-    dim3 griddim(16,16);
+    dim3 griddim(16,8);
     dim3 blockdim(32,32);
     size_t size = (size_t)THREADSPACE*blockdim.x*blockdim.y*griddim.x*griddim.y;
     int ngpus;
@@ -132,42 +140,58 @@ int main(){
     for(int i=0;i<ngpus;i++)
     {
         cudaSetDevice(i);     
+        cudaStreamCreate(&stream[i]);
+        cudaMallocManaged((void**)&img[i], sizeof(cuHostMat)*3);
         error_t = cudaMalloc((void **)&resImg[i], sizeof(uint8)*h*w);
         switch( error_t )
         {
-        case cudaSuccess: printf("cudaSuccess\n");break;
+        case cudaSuccess: break;
         case cudaErrorMemoryAllocation:printf("cudaErrorMemoryAllocation\n");break;
         default:printf("default: %d \n",error_t );break;
         }
         error_t = cudaMalloc((void **)&MemPool[i], sizeof(char)*size); 
         switch( error_t )
         {
-        case cudaSuccess: printf("cudaSuccess\n");break;
+        case cudaSuccess: break;
         case cudaErrorMemoryAllocation:printf("cudaErrorMemoryAllocation\n");break;
         default:printf("default: %d \n",error_t );break;
         }
         if(i == 0)
         {
-            cudaMallocManaged((void**)&img, sizeof(cuHostMat)*3);
             cudaMallocManaged((void **)&imgPad[i], sizeof(cuHostMat)*3);
             for(int j=0;j<3;j++)
             {
-                img[j].init(h, w);
-                img[j].setVal((cuComplex *)img_mat[i], h, w);
+                img[i][j].init(h, w);
+                img[i][j].setVal((cuComplex *)img_mat[j], h, w);  //bug 1 i mistake for j
                 imgPad[i][j] = img[i][j].pad(N, N);    // pad to use sliding windows    
             }
         }else{
             cudaMallocManaged((void **)&imgPad[i], sizeof(cuHostMat)*3);
             for(int j=0;j<3;j++)
             {
+                img[i][j].init(h, w);
                 imgPad[i][j].init(h+2*N, w+2*N);
-                cudaMemcyAsync(imgPad[i][j].get_data(), i, imgPad[0][j].get_data(), 0, sizeof(cuComplex)*(h+2*N)*(w+2*N), stream[i]);
+                error_t = cudaMemcpy2D(imgPad[i][j].get_data(), imgPad[i][j].get_pitch(), imgPad[0][j].get_data(), imgPad[0][j].get_pitch(), sizeof(cuComplex)*(w+2*N), h+2*N, cudaMemcpyDeviceToDevice);
+                switch( error_t )
+                {
+                case cudaSuccess: break;
+                case cudaErrorMemoryAllocation:printf("cudaErrorMemoryAllocation\n");break;
+                default:printf("default: %d \n",error_t );break;
+                }
+                error_t = cudaMemcpy2D(img[i][j].get_data(), img[i][j].get_pitch(), img[0][j].get_data(), img[0][j].get_pitch(), sizeof(cuComplex)*(w), h, cudaMemcpyDeviceToDevice);
+                switch( error_t )
+                {
+                case cudaSuccess: break;
+                case cudaErrorMemoryAllocation:printf("cudaErrorMemoryAllocation\n");break;
+                default:printf("default: %d \n",error_t );break;
+                }
             }
         }
     }
     resImg_host = new uint8[h*w];
-    printf("%lu", size);
-    int num = h/(256*ngpus) + 1;    //每个GPU的kernel数量
+    double iStart = cpuSecond();
+    printf("program begin \n");
+    int num = h/(griddim.x*griddim.y*ngpus) + 1;    //每个GPU的kernel数量
     for(int i = 0;i < ngpus; i++)
     {
         cudaSetDevice(i);
@@ -177,23 +201,23 @@ int main(){
         }
     }
     cudaDeviceSynchronize();
-    printf("ok");
-    // printf("%d\n", img[1].get_h());
-    // printf("%lu\n", sizeof(size_t));
-    // cudaDeviceSynchronize();
-    // Mat detect_res = Mat::zeros(h, w, CV_8UC1);
-    // cudaMemcpy(resImg_host, resImg, sizeof(char)*h*w, cudaMemcpyDeviceToHost);
-    // for(int i=0;i<h;i++)
-    // {
-    //     for(int j=0;j<w;j++)
-    //     {
-    //         detect_res.at<uchar>(i,j) = resImg_host[INDEX(i, j, w)];
-    //     }
-    // }
-    // imshow("detected" , detect_res);
-    // while(char(waitKey())!='q') 
-	// {    
-    // }
+    printf("\nfinish waiting for display the result\n");
+    double iElaps = cpuSecond() - iStart;
+    printf("time usage: %lf\n", iElaps);
+    cudaMemcpy(&resImg[0][512000], &resImg[1][512000], sizeof(uint8)*488000, cudaMemcpyDeviceToDevice);
+    Mat detect_res = Mat::zeros(h, w, CV_8UC1);
+    cudaMemcpy(resImg_host, resImg[0], sizeof(char)*h*w, cudaMemcpyDeviceToHost);
+    for(int i=0;i<h;i++)
+    {
+        for(int j=0;j<w;j++)
+        {
+            detect_res.at<uchar>(i,j) = resImg_host[INDEX(i, j, w)];
+        }
+    }
+    imshow("detected" , detect_res);
+    while(char(waitKey())!='q') 
+	{    
+    }
 
     printf("CUDA-capable devices:%d\n", ngpus);
 }
