@@ -137,6 +137,7 @@ int main(){
     int ngpus;
     cudaGetDeviceCount(&ngpus);
     enableP2P(ngpus);
+    // ngpus = 1;
     for(int i=0;i<ngpus;i++)
     {
         cudaSetDevice(i);     
@@ -204,7 +205,10 @@ int main(){
     printf("\nfinish waiting for display the result\n");
     double iElaps = cpuSecond() - iStart;
     printf("time usage: %lf\n", iElaps);
-    cudaMemcpy(&resImg[0][512000], &resImg[1][512000], sizeof(uint8)*488000, cudaMemcpyDeviceToDevice);
+    if(ngpus == 2)
+    {
+        cudaMemcpy(&resImg[0][512000], &resImg[1][512000], sizeof(uint8)*488000, cudaMemcpyDeviceToDevice);
+    }
     Mat detect_res = Mat::zeros(h, w, CV_8UC1);
     cudaMemcpy(resImg_host, resImg[0], sizeof(char)*h*w, cudaMemcpyDeviceToHost);
     for(int i=0;i<h;i++)
